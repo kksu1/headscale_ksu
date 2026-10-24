@@ -1075,6 +1075,130 @@ func (s *State) RenameNode(nodeID types.NodeID, newName string) (types.NodeView,
 	return s.persistNodeAndRefreshPolicy(view)
 }
 
+// ErrSetNodeIPsInvalid is returned when [State.SetNodeIPs] is given an
+// address that is malformed or of the wrong family.
+var ErrSetNodeIPsInvalid = errors.New("invalid node address")
+
+// SetNodeIPs assigns fixed addresses to a node. An invalid (zero) address
+// keeps the node's current address for that family. New addresses are
+// claimed in the [hsdb.IPAllocator] before anything else changes, which both
+// validates them (inside the configured prefix, not reserved, not in use) and
+// stops the allocator from ever handing them to another node. The node's old
+// addresses are released once the change is persisted. All peers get a full
+// update so they learn the new addresses, and the node itself gets its new
+// self addresses.
+func (s *State) SetNodeIPs(nodeID types.NodeID, ipv4, ipv6 netip.Addr) (types.NodeView, change.Change, error) {
+	if !ipv4.IsValid() && !ipv6.IsValid() {
+		return types.NodeView{}, change.Change{}, fmt.Errorf("%w: no address given", ErrSetNodeIPsInvalid)
+	}
+
+	if ipv4.IsValid() && (!ipv4.Is4() || ipv4.Zone() != "") {
+		return types.NodeView{}, change.Change{}, fmt.Errorf("%w: %s is not an IPv4 address", ErrSetNodeIPsInvalid, ipv4)
+	}
+
+	if ipv6.IsValid() && (!ipv6.Is6() || ipv6.Is4In6() || ipv6.Zone() != "") {
+		return types.NodeView{}, change.Change{}, fmt.Errorf("%w: %s is not an IPv6 address", ErrSetNodeIPsInvalid, ipv6)
+	}
+
+	existing, ok := s.nodeStore.GetNode(nodeID)
+	if !ok || !existing.Valid() {
+		return types.NodeView{}, change.Change{}, fmt.Errorf("%w: %d", ErrNodeNotFound, nodeID)
+	}
+
+	// Only claim addresses that actually change; re-setting a node's own
+	// address is a no-op for that family rather than an "in use" error.
+	var claim, release []netip.Addr
+
+	if ipv4.IsValid() && existing.IPv4().Get() != ipv4 {
+		claim = append(claim, ipv4)
+		if old := existing.IPv4(); old.Valid() {
+			release = append(release, old.Get())
+		}
+	}
+
+	if ipv6.IsValid() && existing.IPv6().Get() != ipv6 {
+		claim = append(claim, ipv6)
+		if old := existing.IPv6(); old.Valid() {
+			release = append(release, old.Get())
+		}
+	}
+
+	if len(claim) == 0 {
+		return existing, change.Change{}, nil
+	}
+
+	err := s.ipAlloc.Claim(claim...)
+	if err != nil {
+		return types.NodeView{}, change.Change{}, fmt.Errorf("setting node IPs: %w", err)
+	}
+
+	setAddrs := func(node *types.Node, v4, v6 netip.Addr) {
+		if v4.IsValid() {
+			node.IPv4 = &v4
+		}
+
+		if v6.IsValid() {
+			node.IPv6 = &v6
+		}
+	}
+
+	var prev4, prev6 netip.Addr
+
+	n, ok := s.nodeStore.UpdateNode(nodeID, func(node *types.Node) {
+		if node.IPv4 != nil {
+			prev4 = *node.IPv4
+		}
+
+		if node.IPv6 != nil {
+			prev6 = *node.IPv6
+		}
+
+		setAddrs(node, ipv4, ipv6)
+	})
+	if !ok {
+		s.ipAlloc.FreeIPs(claim)
+
+		return types.NodeView{}, change.Change{}, fmt.Errorf("%w: %d", ErrNodeNotFound, nodeID)
+	}
+
+	fresh, err := s.persistNode(n)
+	if err != nil {
+		// The database was not written; put the old addresses back so
+		// memory keeps matching the database, and release the claim.
+		s.nodeStore.UpdateNode(nodeID, func(node *types.Node) {
+			if ipv4.IsValid() {
+				node.IPv4 = nil
+			}
+
+			if ipv6.IsValid() {
+				node.IPv6 = nil
+			}
+
+			setAddrs(node, prev4, prev6)
+		})
+		s.ipAlloc.FreeIPs(claim)
+
+		return types.NodeView{}, change.Change{}, fmt.Errorf("setting node IPs: %w", err)
+	}
+
+	s.ipAlloc.FreeIPs(release)
+
+	log.Info().
+		EmbedObject(fresh).
+		Str("new_ips", fmt.Sprint(claim)).
+		Str("released_ips", fmt.Sprint(release)).
+		Msg("node IPs set by admin")
+
+	// Policy filters and peer maps reference node addresses, so refresh
+	// them before fanning out.
+	_, err = s.updatePolicyManagerNodes()
+	if err != nil {
+		return fresh, change.FullUpdate(), fmt.Errorf("updating policy manager after setting node IPs: %w", err)
+	}
+
+	return fresh, change.FullUpdate(), nil
+}
+
 // BackfillNodeIPs assigns IP addresses to nodes that don't have them.
 func (s *State) BackfillNodeIPs() ([]string, error) {
 	changes, err := s.db.BackfillNodeIPs(s.ipAlloc)
