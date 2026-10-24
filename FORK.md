@@ -87,3 +87,12 @@ docker compose exec headscale headscale nodes list
 Rollback: set `image: headscale/headscale:v0.29.5` again and
 `docker compose up -d headscale`. Assigned addresses stay in the database and
 keep working with the official image.
+
+## headscale-admin "Set IP"
+
+A companion patch for headscale-admin (`dev` branch, branch `setip`) adds a
+pencil button next to a node's IP addresses. It calls the endpoint above, sends
+only the family you changed, and shows headscale's error (in use, outside
+prefix, reserved) as a toast. Against an official headscale image the button
+just shows an error, nothing else breaks. Build it with the repo's own
+Dockerfile.
