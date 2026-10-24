@@ -531,6 +531,45 @@
         ]
       }
     },
+    "/api/v1/node/{nodeId}/ip": {
+      "post": {
+        "operationId": "HeadscaleService_SetNodeIPs",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1SetNodeIPsResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "nodeId",
+            "in": "path",
+            "required": true,
+            "type": "string",
+            "format": "uint64"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/HeadscaleServiceSetNodeIPsBody"
+            }
+          }
+        ],
+        "tags": [
+          "HeadscaleService"
+        ]
+      }
+    },
     "/api/v1/node/{nodeId}/rename/{newName}": {
       "post": {
         "operationId": "HeadscaleService_RenameNode",
@@ -960,6 +999,18 @@
           }
         }
       }
+    },
+    "HeadscaleServiceSetNodeIPsBody": {
+      "type": "object",
+      "properties": {
+        "ipv4": {
+          "type": "string"
+        },
+        "ipv6": {
+          "type": "string"
+        }
+      },
+      "description": "SetNodeIPsRequest assigns fixed addresses to a node. An empty field keeps\nthe node's current address for that family."
     },
     "HeadscaleServiceSetTagsBody": {
       "type": "object",
@@ -1465,6 +1516,14 @@
       }
     },
     "v1SetApprovedRoutesResponse": {
+      "type": "object",
+      "properties": {
+        "node": {
+          "$ref": "#/definitions/v1Node"
+        }
+      }
+    },
+    "v1SetNodeIPsResponse": {
       "type": "object",
       "properties": {
         "node": {

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math/big"
 	"net/netip"
+	"slices"
 	"sync"
 
 	"github.com/juanfont/headscale/hscontrol/types"
@@ -21,6 +22,11 @@ var (
 	errGeneratedIPBytesInvalid = errors.New("generated ip bytes are invalid ip")
 	errGeneratedIPNotInPrefix  = errors.New("generated ip not in prefix")
 	errIPAllocatorNil          = errors.New("ip allocator was nil")
+
+	ErrIPNotInPrefix   = errors.New("address is not inside the configured prefix")
+	ErrIPFamilyMissing = errors.New("no prefix is configured for this address family")
+	ErrIPReserved      = errors.New("address is reserved")
+	ErrIPInUse         = errors.New("address is already in use")
 )
 
 // IPAllocator is a singleton responsible for allocating
@@ -401,6 +407,52 @@ func (db *HSDatabase) BackfillNodeIPs(i *IPAllocator) ([]string, error) {
 	})
 
 	return ret, err
+}
+
+// Claim marks the given addresses as used so [IPAllocator.Next] will never
+// hand them out. It is used when an admin assigns a fixed address to a node.
+// Each address must be inside the configured prefix of its family, must not be
+// a network, broadcast or Tailscale-reserved address, and must not already be
+// in use. The check and the claim are atomic: either all addresses are
+// claimed, or none are.
+func (i *IPAllocator) Claim(addrs ...netip.Addr) error {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+
+	set, err := i.usedIPs.IPSet()
+	if err != nil {
+		return err
+	}
+
+	for idx, addr := range addrs {
+		prefix := i.prefix4
+		if addr.Is6() {
+			prefix = i.prefix6
+		}
+
+		if prefix == nil {
+			return fmt.Errorf("%w: %s", ErrIPFamilyMissing, addr)
+		}
+
+		if !prefix.Contains(addr) {
+			return fmt.Errorf("%w: %s not in %s", ErrIPNotInPrefix, addr, prefix)
+		}
+
+		network, broadcast := util.GetIPPrefixEndpoints(*prefix)
+		if addr == network || addr == broadcast || isTailscaleReservedIP(addr) {
+			return fmt.Errorf("%w: %s", ErrIPReserved, addr)
+		}
+
+		if set.Contains(addr) || slices.Contains(addrs[:idx], addr) {
+			return fmt.Errorf("%w: %s", ErrIPInUse, addr)
+		}
+	}
+
+	for _, addr := range addrs {
+		i.usedIPs.Add(addr)
+	}
+
+	return nil
 }
 
 func (i *IPAllocator) FreeIPs(ips []netip.Addr) {

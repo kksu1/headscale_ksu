@@ -26,6 +26,7 @@ import (
 	"tailscale.com/types/views"
 
 	v1 "github.com/juanfont/headscale/gen/go/headscale/v1"
+	hsdb "github.com/juanfont/headscale/hscontrol/db"
 	policyv2 "github.com/juanfont/headscale/hscontrol/policy/v2"
 	"github.com/juanfont/headscale/hscontrol/state"
 	"github.com/juanfont/headscale/hscontrol/types"
@@ -521,6 +522,56 @@ func (api headscaleV1APIServer) RenameNode(
 		Msg("node renamed")
 
 	return &v1.RenameNodeResponse{Node: node.Proto()}, nil
+}
+
+func (api headscaleV1APIServer) SetNodeIPs(
+	ctx context.Context,
+	request *v1.SetNodeIPsRequest,
+) (*v1.SetNodeIPsResponse, error) {
+	var ipv4, ipv6 netip.Addr
+
+	if request.GetIpv4() != "" {
+		addr, err := netip.ParseAddr(request.GetIpv4())
+		if err != nil {
+			return nil, status.Errorf(codes.InvalidArgument, "parsing ipv4 %q: %s", request.GetIpv4(), err)
+		}
+
+		ipv4 = addr
+	}
+
+	if request.GetIpv6() != "" {
+		addr, err := netip.ParseAddr(request.GetIpv6())
+		if err != nil {
+			return nil, status.Errorf(codes.InvalidArgument, "parsing ipv6 %q: %s", request.GetIpv6(), err)
+		}
+
+		ipv6 = addr
+	}
+
+	node, nodeChange, err := api.h.state.SetNodeIPs(types.NodeID(request.GetNodeId()), ipv4, ipv6)
+	// A policy refresh can fail after the new addresses were committed;
+	// still tell the peers so the tailnet matches the database.
+	if !nodeChange.IsEmpty() {
+		api.h.Change(nodeChange)
+	}
+
+	if err != nil {
+		switch {
+		case errors.Is(err, state.ErrNodeNotFound):
+			return nil, status.Error(codes.NotFound, err.Error())
+		case errors.Is(err, hsdb.ErrIPInUse):
+			return nil, status.Error(codes.AlreadyExists, err.Error())
+		case errors.Is(err, state.ErrSetNodeIPsInvalid),
+			errors.Is(err, hsdb.ErrIPNotInPrefix),
+			errors.Is(err, hsdb.ErrIPFamilyMissing),
+			errors.Is(err, hsdb.ErrIPReserved):
+			return nil, status.Error(codes.InvalidArgument, err.Error())
+		}
+
+		return nil, err
+	}
+
+	return &v1.SetNodeIPsResponse{Node: node.Proto()}, nil
 }
 
 func (api headscaleV1APIServer) ListNodes(

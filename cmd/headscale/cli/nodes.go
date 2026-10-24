@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/netip"
 	"strconv"
@@ -16,6 +17,8 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 	"tailscale.com/types/key"
 )
+
+var errInvalidArgs = errors.New("invalid arguments")
 
 func init() {
 	rootCmd.AddCommand(nodeCmd)
@@ -53,6 +56,9 @@ func init() {
 	mustMarkRequired(approveRoutesCmd, "identifier")
 	approveRoutesCmd.Flags().StringSliceP("routes", "r", []string{}, `List of routes that will be approved (comma-separated, e.g. "10.0.0.0/8,192.168.0.0/24" or empty string to remove all approved routes)`)
 	nodeCmd.AddCommand(approveRoutesCmd)
+
+	setNodeIPsCmd.Flags().Uint64P("identifier", "i", 0, "Node identifier (ID), instead of passing it as the first argument")
+	nodeCmd.AddCommand(setNodeIPsCmd)
 
 	nodeCmd.AddCommand(backfillNodeIPsCmd)
 }
@@ -507,5 +513,61 @@ var approveRoutesCmd = &cobra.Command{
 		}
 
 		return printOutput(cmd, resp.GetNode(), "Node updated")
+	}),
+}
+
+var setNodeIPsCmd = &cobra.Command{
+	Use:   "set-ip ID ADDRESS [ADDRESS]",
+	Short: "Assign a fixed IPv4 and/or IPv6 address to a node",
+	Long: `Assign a fixed IPv4 and/or IPv6 address to a node.
+
+Each address is matched to its family; a family that is not given keeps the
+node's current address. Addresses must be inside the configured prefixes and
+not used by another node. The node and all its peers are updated live.
+
+  headscale nodes set-ip 8 100.64.0.56
+  headscale nodes set-ip 8 100.64.0.56 fd7a:115c:a1e0::38
+  headscale nodes set-ip -i 8 fd7a:115c:a1e0::38`,
+	Args: cobra.RangeArgs(1, 3), //nolint:mnd
+	RunE: grpcRunE(func(ctx context.Context, client v1.HeadscaleServiceClient, cmd *cobra.Command, args []string) error {
+		identifier, _ := cmd.Flags().GetUint64("identifier")
+		if identifier == 0 {
+			id, err := strconv.ParseUint(args[0], util.Base10, 64)
+			if err != nil {
+				return fmt.Errorf("parsing node ID %q: %w", args[0], err)
+			}
+
+			identifier = id
+			args = args[1:]
+		}
+
+		request := &v1.SetNodeIPsRequest{NodeId: identifier}
+
+		if len(args) == 0 || len(args) > 2 { //nolint:mnd
+			return fmt.Errorf("%w: expected one IPv4 and/or one IPv6 address", errInvalidArgs)
+		}
+
+		for _, arg := range args {
+			addr, err := netip.ParseAddr(arg)
+			if err != nil {
+				return fmt.Errorf("parsing address %q: %w", arg, err)
+			}
+
+			switch {
+			case addr.Is4() && request.GetIpv4() == "":
+				request.Ipv4 = addr.String()
+			case addr.Is6() && !addr.Is4In6() && request.GetIpv6() == "":
+				request.Ipv6 = addr.String()
+			default:
+				return fmt.Errorf("%w: %q, give at most one IPv4 and one IPv6 address", errInvalidArgs, arg)
+			}
+		}
+
+		response, err := client.SetNodeIPs(ctx, request)
+		if err != nil {
+			return fmt.Errorf("setting node IPs: %w", err)
+		}
+
+		return printOutput(cmd, response.GetNode(), "Node IPs updated")
 	}),
 }

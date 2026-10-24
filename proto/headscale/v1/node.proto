@@ -142,3 +142,15 @@ message BackfillNodeIPsRequest {
 message BackfillNodeIPsResponse {
   repeated string changes = 1;
 }
+
+// SetNodeIPsRequest assigns fixed addresses to a node. An empty field keeps
+// the node's current address for that family.
+message SetNodeIPsRequest {
+  uint64 node_id = 1;
+  string ipv4 = 2;
+  string ipv6 = 3;
+}
+
+message SetNodeIPsResponse {
+  Node node = 1;
+}
