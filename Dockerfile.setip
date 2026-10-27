@@ -4,9 +4,9 @@
 #
 #   docker build -f Dockerfile.setip -t headscale-local:v0.29.6-setip .
 #
-# The binary reports version "dev"; headscale then skips its database
-# version check and keeps the stored version, so switching back to the
-# official image needs no database change.
+# The binary reports version v0.29.6+setip. The "+setip" build metadata is
+# ignored by headscale's database version check and by the update check, so
+# both treat it as v0.29.6. Override with --build-arg VERSION=... if needed.
 
 # Go 1.27.3 or newer is required (CVE-2026-111943, see CHANGELOG 0.29.6).
 FROM docker.io/golang:1.27.3-trixie AS builder
@@ -15,8 +15,10 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 
+ARG VERSION=v0.29.6+setip
 COPY . .
-RUN CGO_ENABLED=0 go build -mod=readonly -trimpath -ldflags="-s -w" \
+RUN CGO_ENABLED=0 go build -mod=readonly -trimpath \
+    -ldflags="-s -w -X github.com/juanfont/headscale/hscontrol/types.Version=${VERSION}" \
     -o /out/headscale ./cmd/headscale
 
 # Same pinned base as the official 0.29.6 image (.goreleaser.yml).

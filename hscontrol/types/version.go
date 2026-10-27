@@ -40,6 +40,11 @@ func (v *VersionInfo) String() string {
 
 var buildInfo = sync.OnceValues(debug.ReadBuildInfo)
 
+// Version overrides the version Go stamps into the binary. Builds without
+// VCS data (e.g. Docker builds, where .git is not in the context) set it
+// with -ldflags "-X github.com/juanfont/headscale/hscontrol/types.Version=...".
+var Version string
+
 var GetVersionInfo = sync.OnceValue(func() *VersionInfo {
 	info := &VersionInfo{
 		Version:   "dev",
@@ -53,13 +58,17 @@ var GetVersionInfo = sync.OnceValue(func() *VersionInfo {
 		Dirty: false,
 	}
 
+	if Version != "" {
+		info.Version = Version
+	}
+
 	buildInfo, ok := buildInfo()
 	if !ok {
 		return info
 	}
 
 	// Extract version from module path or main version
-	if buildInfo.Main.Version != "" && buildInfo.Main.Version != "(devel)" {
+	if Version == "" && buildInfo.Main.Version != "" && buildInfo.Main.Version != "(devel)" {
 		info.Version = buildInfo.Main.Version
 	}
 
