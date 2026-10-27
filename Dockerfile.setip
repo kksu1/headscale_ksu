@@ -1,14 +1,15 @@
-# Personal build of headscale v0.29.5 with "nodes set-ip". Mirrors the
+# Personal build of headscale v0.29.6 with "nodes set-ip". Mirrors the
 # official image layout (distroless base, binary at /ko-app/headscale) so it
-# is a drop-in replacement for headscale/headscale:v0.29.5 in docker compose.
+# is a drop-in replacement for headscale/headscale:v0.29.6 in docker compose.
 #
-#   docker build -f Dockerfile.setip -t headscale-local:v0.29.5-setip .
+#   docker build -f Dockerfile.setip -t headscale-local:v0.29.6-setip .
 #
 # The binary reports version "dev"; headscale then skips its database
 # version check and keeps the stored version, so switching back to the
 # official image needs no database change.
 
-FROM docker.io/golang:1.26.9-trixie AS builder
+# Go 1.27.3 or newer is required (CVE-2026-111943, see CHANGELOG 0.29.6).
+FROM docker.io/golang:1.27.3-trixie AS builder
 WORKDIR /src
 
 COPY go.mod go.sum ./
@@ -18,7 +19,8 @@ COPY . .
 RUN CGO_ENABLED=0 go build -mod=readonly -trimpath -ldflags="-s -w" \
     -o /out/headscale ./cmd/headscale
 
-FROM gcr.io/distroless/base-debian13
+# Same pinned base as the official 0.29.6 image (.goreleaser.yml).
+FROM gcr.io/distroless/base-debian13@sha256:f5e95195e998742ff590b7569bae479accce1226e51ae6c3118954030121cdcb
 COPY --from=builder /out/headscale /ko-app/headscale
 ENV PATH=/ko-app:$PATH
 ENTRYPOINT ["/ko-app/headscale"]

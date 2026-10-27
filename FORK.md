@@ -1,8 +1,8 @@
-# headscale v0.29.5 + `nodes set-ip`
+# headscale v0.29.6 + `nodes set-ip`
 
-A personal fork of headscale v0.29.5 that adds one feature: assigning a fixed
+A personal fork of headscale v0.29.6 that adds one feature: assigning a fixed
 IPv4 and/or IPv6 address to an existing node, live, without restarting
-headscale. Everything else is upstream v0.29.5. No database schema change.
+headscale. Everything else is upstream v0.29.6. No database schema change.
 
 ## Usage
 
@@ -51,7 +51,7 @@ Things to know:
 - `headscale version` reports `dev`. Headscale then skips its database version
   check and keeps the stored version, so rolling back is clean.
 
-## Changes vs v0.29.5
+## Changes vs v0.29.6
 
 | File | Change |
 | --- | --- |
@@ -66,8 +66,13 @@ Things to know:
 ## Build
 
 ```sh
-docker build -f Dockerfile.setip -t headscale-local:v0.29.5-setip .
+docker build -f Dockerfile.setip -t headscale-local:v0.29.6-setip .
 ```
+
+Upstream 0.29.6 requires Go 1.27.3 or newer for custom builds
+(CVE-2026-111943). `Dockerfile.setip` builds with `golang:1.27.3-trixie` and
+uses the same digest-pinned `distroless/base-debian13` base as the official
+0.29.6 image; `headscale version` shows `built with: go1.27.3`.
 
 The image mirrors the official one (distroless, `/ko-app/headscale`
 entrypoint), so it is a drop-in swap of the `image:` line in compose.
@@ -78,15 +83,28 @@ entrypoint), so it is a drop-in swap of the `image:` line in compose.
 cd ~/headscale-admin
 docker compose stop headscale
 cp <data-dir>/db.sqlite <data-dir>/db.sqlite.bak-$(date +%F)   # backup
-# compose: image: headscale-local:v0.29.5-setip
+# compose: image: headscale-local:v0.29.6-setip
 docker compose up -d headscale
 docker compose exec headscale headscale nodes set-ip 8 100.64.0.56
 docker compose exec headscale headscale nodes list
 ```
 
-Rollback: set `image: headscale/headscale:v0.29.5` again and
+Rollback: set the previous `image:` line again (`headscale-local:v0.29.5-setip`
+or `headscale/headscale:v0.29.6`) and
 `docker compose up -d headscale`. Assigned addresses stay in the database and
 keep working with the official image.
+
+## Branches
+
+| Branch | Base |
+| --- | --- |
+| `setip-v0.29.6` | upstream tag `v0.29.6` (current) |
+| `setip-v0.29.5` | upstream tag `v0.29.5` (previous, kept for rollback) |
+
+Each branch is the same two commits rebased onto the upstream tag. For the next
+release: `git checkout -b setip-vX.Y.Z setip-v0.29.6 && git rebase --onto vX.Y.Z v0.29.6`, bump the Go and base
+image pins in `Dockerfile.setip` to match upstream's `Dockerfile.integration`
+and `.goreleaser.yml`, then `go test ./hscontrol/...` and rebuild.
 
 ## headscale-admin "Set IP"
 
