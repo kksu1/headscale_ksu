@@ -48,8 +48,11 @@ Things to know:
 
 - ACL `hosts` entries or rules written as raw IPs follow the IP, not the node.
 - Existing connections to the old address on peers break; clients reconnect.
-- `headscale version` reports `dev`. Headscale then skips its database version
-  check and keeps the stored version, so rolling back is clean.
+- `headscale version` reports `v0.29.6+setip`, stamped by `Dockerfile.setip`
+  through `types.Version`. The database version check and the update check
+  ignore the `+setip` build metadata and treat it as v0.29.6, and the stored
+  database version becomes `v0.29.6+setip`. Rolling back to the official
+  v0.29.5 or v0.29.6 image is allowed (same minor version).
 
 ## Changes vs v0.29.6
 
@@ -61,6 +64,7 @@ Things to know:
 | `hscontrol/grpcv1.go` | gRPC handler, maps errors to gRPC codes |
 | `cmd/headscale/cli/nodes.go` | `headscale nodes set-ip` |
 | `*_test.go` | allocator, state (memory/DB/restart/rollback), live propagation via `servertest` |
+| `hscontrol/types/version.go` | `types.Version`, set at build time with `-ldflags -X` |
 | `Dockerfile.setip` | image build |
 
 ## Build
@@ -72,7 +76,10 @@ docker build -f Dockerfile.setip -t headscale-local:v0.29.6-setip .
 Upstream 0.29.6 requires Go 1.27.3 or newer for custom builds
 (CVE-2026-111943). `Dockerfile.setip` builds with `golang:1.27.3-trixie` and
 uses the same digest-pinned `distroless/base-debian13` base as the official
-0.29.6 image; `headscale version` shows `built with: go1.27.3`.
+0.29.6 image; `headscale version` shows `v0.29.6+setip` and
+`built with: go1.27.3`. Docker builds have no `.git`, so Go cannot stamp the
+version itself; for another release pass `--build-arg VERSION=vX.Y.Z+setip`
+or change the `ARG` default.
 
 The image mirrors the official one (distroless, `/ko-app/headscale`
 entrypoint), so it is a drop-in swap of the `image:` line in compose.
@@ -101,7 +108,7 @@ keep working with the official image.
 | `setip-v0.29.6` | upstream tag `v0.29.6` (current) |
 | `setip-v0.29.5` | upstream tag `v0.29.5` (previous, kept for rollback) |
 
-Each branch is the same two commits rebased onto the upstream tag. For the next
+Each branch is the set-ip commits rebased onto the upstream tag. For the next
 release: `git checkout -b setip-vX.Y.Z setip-v0.29.6 && git rebase --onto vX.Y.Z v0.29.6`, bump the Go and base
 image pins in `Dockerfile.setip` to match upstream's `Dockerfile.integration`
 and `.goreleaser.yml`, then `go test ./hscontrol/...` and rebuild.
