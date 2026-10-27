@@ -51,6 +51,8 @@ CREATE TABLE pre_auth_keys(
   expiration datetime,
 
   created_at datetime,
+  ipv4 text,
+  ipv6 text,
 
   CONSTRAINT fk_pre_auth_keys_user FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE SET NULL
 );

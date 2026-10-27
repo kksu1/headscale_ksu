@@ -30,6 +30,10 @@ func init() {
 		StringP("expiration", "e", DefaultPreAuthKeyExpiry, "Human-readable expiration of the key (e.g. 30m, 24h)")
 	createPreAuthKeyCmd.Flags().
 		StringSlice("tags", []string{}, "Tags to automatically assign to node")
+	createPreAuthKeyCmd.Flags().
+		String("ipv4", "", "Fixed IPv4 address for the node that registers with this key")
+	createPreAuthKeyCmd.Flags().
+		String("ipv6", "", "Fixed IPv6 address for the node that registers with this key")
 	createPreAuthKeyCmd.PersistentFlags().Uint64P("user", "u", 0, "User identifier (ID)")
 	expirePreAuthKeyCmd.PersistentFlags().Uint64P("id", "i", 0, "Authkey ID")
 	deletePreAuthKeyCmd.PersistentFlags().Uint64P("id", "i", 0, "Authkey ID")
@@ -105,6 +109,8 @@ var createPreAuthKeyCmd = &cobra.Command{
 		reusable, _ := cmd.Flags().GetBool("reusable")
 		ephemeral, _ := cmd.Flags().GetBool("ephemeral")
 		tags, _ := cmd.Flags().GetStringSlice("tags")
+		ipv4, _ := cmd.Flags().GetString("ipv4")
+		ipv6, _ := cmd.Flags().GetString("ipv6")
 
 		expiration, err := expirationFromFlag(cmd)
 		if err != nil {
@@ -117,6 +123,8 @@ var createPreAuthKeyCmd = &cobra.Command{
 			Ephemeral:  ephemeral,
 			AclTags:    tags,
 			Expiration: expiration,
+			Ipv4:       ipv4,
+			Ipv6:       ipv6,
 		}
 
 		response, err := client.CreatePreAuthKey(ctx, request)

@@ -132,6 +132,12 @@ func (src *PreAuthKey) Clone() *PreAuthKey {
 	if dst.Expiration != nil {
 		dst.Expiration = new(*src.Expiration)
 	}
+	if dst.IPv4 != nil {
+		dst.IPv4 = new(*src.IPv4)
+	}
+	if dst.IPv6 != nil {
+		dst.IPv6 = new(*src.IPv6)
+	}
 	return dst
 }
 
@@ -149,4 +155,6 @@ var _PreAuthKeyCloneNeedsRegeneration = PreAuthKey(struct {
 	Tags       []string
 	CreatedAt  *time.Time
 	Expiration *time.Time
+	IPv4       *netip.Addr
+	IPv6       *netip.Addr
 }{})

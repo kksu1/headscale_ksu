@@ -1,8 +1,15 @@
 # headscale v0.29.6 + `nodes set-ip`
 
-A personal fork of headscale v0.29.6 that adds one feature: assigning a fixed
-IPv4 and/or IPv6 address to an existing node, live, without restarting
-headscale. Everything else is upstream v0.29.6. No database schema change.
+A personal fork of headscale v0.29.6 that adds fixed node addresses:
+
+- `nodes set-ip` assigns a fixed IPv4 and/or IPv6 address to an existing node,
+  live, without restarting headscale.
+- A pre-auth key can carry a fixed address, which the node registering with it
+  gets from the start (see [Fixed IP pre-auth keys](#fixed-ip-pre-auth-keys)).
+
+Everything else is upstream v0.29.6. The pre-auth key feature adds two columns
+to `pre_auth_keys`, so rolling back to an image without it needs one SQL step
+first (see [Deploy and roll back](#deploy-and-roll-back)).
 
 ## Usage
 
@@ -22,7 +29,30 @@ curl -X POST -H "Authorization: Bearer $KEY" \
 gRPC: `HeadscaleService.SetNodeIPs(SetNodeIPsRequest{node_id, ipv4, ipv6})`.
 An empty field keeps the node's current address for that family.
 
-## What it does
+## Fixed IP pre-auth keys
+
+```sh
+headscale preauthkeys create -u 1 --ipv4 100.64.0.56
+headscale preauthkeys create -u 1 --ipv4 100.64.0.56 --ipv6 fd7a:115c:a1e0::38
+```
+
+REST: `POST /api/v1/preauthkey` with `"ipv4"` and/or `"ipv6"` next to the usual
+fields. headscale-admin's Deploy page has a Fixed IP option that does this.
+
+- The addresses are validated like `set-ip` (inside the prefix, not reserved,
+  not in use) when the key is created, and the key is refused if they fail.
+- They are then reserved for the key: the allocator does not hand them to any
+  other node, `set-ip` and other keys cannot take them. The reservation is kept
+  in `pre_auth_keys.ipv4` / `ipv6` and rebuilt on restart.
+- The node that registers with the key gets those addresses; a family the key
+  leaves empty is allocated as usual. If the machine already has a node for
+  that user, the node is moved to the addresses (like `set-ip`).
+- The reservation ends when the key is used, expired (by time or
+  `preauthkeys expire`) or deleted.
+- Reusable keys cannot carry fixed addresses, one address cannot go to several
+  nodes.
+
+## What `set-ip` does
 
 1. Parses each address and checks its family.
 2. Claims the new address(es) in the IP allocator, in one atomic step. The
@@ -65,6 +95,11 @@ Things to know:
 | `cmd/headscale/cli/nodes.go` | `headscale nodes set-ip` |
 | `*_test.go` | allocator, state (memory/DB/restart/rollback), live propagation via `servertest` |
 | `hscontrol/types/version.go` | `types.Version`, set at build time with `-ldflags -X` |
+| `proto/headscale/v1/preauthkey.proto`, `gen/` | `ipv4` / `ipv6` on `PreAuthKey` and `CreatePreAuthKeyRequest` |
+| `hscontrol/db/db.go`, `schema.sql` | migration `202610271200-pre-auth-key-fixed-ips` (adds `pre_auth_keys.ipv4`, `ipv6`) |
+| `hscontrol/db/ip.go` | `IPAllocator.Reserve` / `Unreserve` / `NextFor` |
+| `hscontrol/state/state.go` | `State.CreatePreAuthKeyWithIPs`, fixed addresses at registration |
+| `cmd/headscale/cli/preauthkeys.go` | `preauthkeys create --ipv4 --ipv6` |
 | `Dockerfile.setip` | image build |
 
 ## Build
@@ -100,6 +135,30 @@ Rollback: set the previous `image:` line again (`headscale-local:v0.29.5-setip`
 or `headscale/headscale:v0.29.6`) and
 `docker compose up -d headscale`. Assigned addresses stay in the database and
 keep working with the official image.
+
+Once a build with fixed IP pre-auth keys has run, the database has two extra
+columns, and on SQLite every image without them (official or an older setip
+build) refuses to start with `validating schema`. Remove them first, with
+headscale stopped:
+
+```sh
+cd ~/headscale-admin
+docker compose stop headscale
+C=$(docker compose ps -aq headscale)
+D=~/headscale-rollback-$(date +%F-%H%M); mkdir -p "$D"
+docker cp "$C":/var/lib/headscale/. "$D/"
+ls "$D"   # must not list db.sqlite-wal; if it does, stop here
+cp "$D/db.sqlite" "$D/db.sqlite.before-rollback"
+docker run --rm -v "$D":/d alpine:3 sh -c 'apk add -q sqlite && sqlite3 /d/db.sqlite "
+  ALTER TABLE pre_auth_keys DROP COLUMN ipv4;
+  ALTER TABLE pre_auth_keys DROP COLUMN ipv6;
+  DELETE FROM migrations WHERE id = '\''202610271200-pre-auth-key-fixed-ips'\'';"'
+docker cp "$D/db.sqlite" "$C":/var/lib/headscale/db.sqlite
+# now switch the image: line and docker compose up -d headscale
+```
+
+Pending fixed addresses on unused keys are dropped; node addresses are kept.
+Upgrading again re-adds the columns.
 
 ## Branches
 

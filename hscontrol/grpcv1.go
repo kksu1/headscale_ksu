@@ -172,15 +172,22 @@ func (api headscaleV1APIServer) CreatePreAuthKey(
 		userID = user.TypedID()
 	}
 
-	preAuthKey, err := api.h.state.CreatePreAuthKey(
+	ipv4, ipv6, err := parseFixedAddrs(request.GetIpv4(), request.GetIpv6())
+	if err != nil {
+		return nil, err
+	}
+
+	preAuthKey, err := api.h.state.CreatePreAuthKeyWithIPs(
 		userID,
 		request.GetReusable(),
 		request.GetEphemeral(),
 		&expiration,
 		request.AclTags,
+		ipv4,
+		ipv6,
 	)
 	if err != nil {
-		return nil, err
+		return nil, fixedAddrStatus(err)
 	}
 
 	return &v1.CreatePreAuthKeyResponse{PreAuthKey: preAuthKey.Proto()}, nil
@@ -528,24 +535,9 @@ func (api headscaleV1APIServer) SetNodeIPs(
 	ctx context.Context,
 	request *v1.SetNodeIPsRequest,
 ) (*v1.SetNodeIPsResponse, error) {
-	var ipv4, ipv6 netip.Addr
-
-	if request.GetIpv4() != "" {
-		addr, err := netip.ParseAddr(request.GetIpv4())
-		if err != nil {
-			return nil, status.Errorf(codes.InvalidArgument, "parsing ipv4 %q: %s", request.GetIpv4(), err)
-		}
-
-		ipv4 = addr
-	}
-
-	if request.GetIpv6() != "" {
-		addr, err := netip.ParseAddr(request.GetIpv6())
-		if err != nil {
-			return nil, status.Errorf(codes.InvalidArgument, "parsing ipv6 %q: %s", request.GetIpv6(), err)
-		}
-
-		ipv6 = addr
+	ipv4, ipv6, err := parseFixedAddrs(request.GetIpv4(), request.GetIpv6())
+	if err != nil {
+		return nil, err
 	}
 
 	node, nodeChange, err := api.h.state.SetNodeIPs(types.NodeID(request.GetNodeId()), ipv4, ipv6)
@@ -556,22 +548,57 @@ func (api headscaleV1APIServer) SetNodeIPs(
 	}
 
 	if err != nil {
-		switch {
-		case errors.Is(err, state.ErrNodeNotFound):
+		if errors.Is(err, state.ErrNodeNotFound) {
 			return nil, status.Error(codes.NotFound, err.Error())
-		case errors.Is(err, hsdb.ErrIPInUse):
-			return nil, status.Error(codes.AlreadyExists, err.Error())
-		case errors.Is(err, state.ErrSetNodeIPsInvalid),
-			errors.Is(err, hsdb.ErrIPNotInPrefix),
-			errors.Is(err, hsdb.ErrIPFamilyMissing),
-			errors.Is(err, hsdb.ErrIPReserved):
-			return nil, status.Error(codes.InvalidArgument, err.Error())
 		}
 
-		return nil, err
+		return nil, fixedAddrStatus(err)
 	}
 
 	return &v1.SetNodeIPsResponse{Node: node.Proto()}, nil
+}
+
+// parseFixedAddrs parses the optional IPv4 and IPv6 fields of set-ip and
+// pre-auth key requests. An empty field gives an invalid (zero) address.
+func parseFixedAddrs(ipv4, ipv6 string) (netip.Addr, netip.Addr, error) {
+	var addr4, addr6 netip.Addr
+
+	if ipv4 != "" {
+		addr, err := netip.ParseAddr(ipv4)
+		if err != nil {
+			return addr4, addr6, status.Errorf(codes.InvalidArgument, "parsing ipv4 %q: %s", ipv4, err)
+		}
+
+		addr4 = addr
+	}
+
+	if ipv6 != "" {
+		addr, err := netip.ParseAddr(ipv6)
+		if err != nil {
+			return addr4, addr6, status.Errorf(codes.InvalidArgument, "parsing ipv6 %q: %s", ipv6, err)
+		}
+
+		addr6 = addr
+	}
+
+	return addr4, addr6, nil
+}
+
+// fixedAddrStatus maps fixed-address errors to gRPC codes.
+func fixedAddrStatus(err error) error {
+	switch {
+	case errors.Is(err, hsdb.ErrIPInUse),
+		errors.Is(err, hsdb.ErrIPReservedByKey):
+		return status.Error(codes.AlreadyExists, err.Error())
+	case errors.Is(err, state.ErrSetNodeIPsInvalid),
+		errors.Is(err, state.ErrFixedIPReusableKey),
+		errors.Is(err, hsdb.ErrIPNotInPrefix),
+		errors.Is(err, hsdb.ErrIPFamilyMissing),
+		errors.Is(err, hsdb.ErrIPReserved):
+		return status.Error(codes.InvalidArgument, err.Error())
+	}
+
+	return err
 }
 
 func (api headscaleV1APIServer) ListNodes(
