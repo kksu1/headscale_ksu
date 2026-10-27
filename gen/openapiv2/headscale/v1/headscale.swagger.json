@@ -1177,6 +1177,13 @@
           "items": {
             "type": "string"
           }
+        },
+        "ipv4": {
+          "type": "string",
+          "description": "Fixed addresses for the node that registers with this key. Empty means\nallocate as usual. Not allowed on reusable keys."
+        },
+        "ipv6": {
+          "type": "string"
         }
       }
     },
@@ -1478,6 +1485,13 @@
           "items": {
             "type": "string"
           }
+        },
+        "ipv4": {
+          "type": "string",
+          "description": "Fixed addresses the node registering with this key gets."
+        },
+        "ipv6": {
+          "type": "string"
         }
       }
     },
