@@ -9,6 +9,7 @@ import (
 	"net/netip"
 	"slices"
 	"sync"
+	"time"
 
 	"github.com/juanfont/headscale/hscontrol/types"
 	"github.com/juanfont/headscale/hscontrol/util"
@@ -27,7 +28,19 @@ var (
 	ErrIPFamilyMissing = errors.New("no prefix is configured for this address family")
 	ErrIPReserved      = errors.New("address is reserved")
 	ErrIPInUse         = errors.New("address is already in use")
+	ErrIPReservedByKey = errors.New("address is reserved for a pre-auth key")
 )
+
+// ipReservation holds an address for the node that registers with a
+// pre-auth key. It lapses when the key expires.
+type ipReservation struct {
+	keyID      uint64
+	expiration *time.Time
+}
+
+func (r ipReservation) live(now time.Time) bool {
+	return r.expiration == nil || r.expiration.After(now)
+}
 
 // IPAllocator is a singleton responsible for allocating
 // IP addresses for nodes and making sure the same
@@ -53,6 +66,10 @@ type IPAllocator struct {
 	// database fails, the IP will be allocated here
 	// until the next restart of Headscale.
 	usedIPs netipx.IPSetBuilder
+
+	// Addresses held for unused pre-auth keys. [IPAllocator.Next] and
+	// [IPAllocator.Claim] skip them until the key is used or expires.
+	reserved map[netip.Addr]ipReservation
 }
 
 // NewIPAllocator returns a new [IPAllocator] singleton which
@@ -70,6 +87,8 @@ func NewIPAllocator(
 		prefix6: prefix6,
 
 		strategy: strategy,
+
+		reserved: make(map[netip.Addr]ipReservation),
 	}
 
 	var (
@@ -139,6 +158,26 @@ func NewIPAllocator(
 	}
 
 	ret.usedIPs = ips
+
+	if db != nil {
+		var keys []types.PreAuthKey
+
+		err := db.Read(func(rx *gorm.DB) error {
+			return rx.Select("id", "ipv4", "ipv6", "expiration").
+				Where("used = ? AND (ipv4 IS NOT NULL OR ipv6 IS NOT NULL)", false).
+				Find(&keys).Error
+		})
+		if err != nil {
+			return nil, fmt.Errorf("reading pre-auth key addresses from database: %w", err)
+		}
+
+		for _, key := range keys {
+			err := ret.Reserve(key.ID, key.Expiration, key.Addrs()...)
+			if err != nil {
+				log.Warn().Err(err).Uint64("key_id", key.ID).Msg("pre-auth key address no longer available, not reserving it")
+			}
+		}
+	}
 
 	return &ret, nil
 }
@@ -238,7 +277,7 @@ func (i *IPAllocator) next(prev netip.Addr, prefix *netip.Prefix) (*netip.Addr, 
 	// instead of re-drawing in-prefix addresses forever under i.mu.
 	start := ip
 	for {
-		if prefix.Contains(ip) && !set.Contains(ip) && !isTailscaleReservedIP(ip) {
+		if prefix.Contains(ip) && !set.Contains(ip) && !isTailscaleReservedIP(ip) && !i.reservedLocked(ip, 0) {
 			i.usedIPs.Add(ip)
 
 			return &ip, nil
@@ -413,12 +452,127 @@ func (db *HSDatabase) BackfillNodeIPs(i *IPAllocator) ([]string, error) {
 // hand them out. It is used when an admin assigns a fixed address to a node.
 // Each address must be inside the configured prefix of its family, must not be
 // a network, broadcast or Tailscale-reserved address, and must not already be
-// in use. The check and the claim are atomic: either all addresses are
-// claimed, or none are.
+// in use or reserved for a pre-auth key. The check and the claim are atomic:
+// either all addresses are claimed, or none are.
 func (i *IPAllocator) Claim(addrs ...netip.Addr) error {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 
+	err := i.checkLocked(0, addrs)
+	if err != nil {
+		return err
+	}
+
+	for _, addr := range addrs {
+		i.usedIPs.Add(addr)
+	}
+
+	return nil
+}
+
+// Reserve holds the given addresses for the node that registers with the
+// pre-auth key keyID, until the key expires. It validates the addresses like
+// [IPAllocator.Claim]. The check and the reservation are atomic.
+func (i *IPAllocator) Reserve(keyID uint64, expiration *time.Time, addrs ...netip.Addr) error {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+
+	err := i.checkLocked(keyID, addrs)
+	if err != nil {
+		return err
+	}
+
+	for _, addr := range addrs {
+		i.reserved[addr] = ipReservation{keyID: keyID, expiration: expiration}
+	}
+
+	return nil
+}
+
+// Unreserve drops every address reserved for the pre-auth key keyID.
+func (i *IPAllocator) Unreserve(keyID uint64) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+
+	i.unreserveLocked(keyID)
+}
+
+func (i *IPAllocator) unreserveLocked(keyID uint64) {
+	for addr, r := range i.reserved {
+		if r.keyID == keyID {
+			delete(i.reserved, addr)
+		}
+	}
+}
+
+// NextFor hands out addresses for a node registering with key. The key's
+// fixed addresses are claimed, families the key leaves empty are allocated
+// like [IPAllocator.Next], and the key's reservation is dropped. A key
+// without fixed addresses behaves exactly like [IPAllocator.Next].
+func (i *IPAllocator) NextFor(key *types.PreAuthKey) (*netip.Addr, *netip.Addr, error) {
+	if key == nil || len(key.Addrs()) == 0 {
+		return i.Next()
+	}
+
+	i.mu.Lock()
+	defer i.mu.Unlock()
+
+	fixed := key.Addrs()
+
+	err := i.checkLocked(key.ID, fixed)
+	if err != nil {
+		return nil, nil, fmt.Errorf("claiming pre-auth key addresses: %w", err)
+	}
+
+	var ret4, ret6 *netip.Addr
+
+	if key.IPv4 != nil {
+		ret4 = new(*key.IPv4)
+	} else if i.prefix4 != nil {
+		ret4, err = i.next(i.prev4, i.prefix4)
+		if err != nil {
+			return nil, nil, fmt.Errorf("allocating IPv4 address: %w", err)
+		}
+
+		i.prev4 = *ret4
+	}
+
+	if key.IPv6 != nil {
+		ret6 = new(*key.IPv6)
+	} else if i.prefix6 != nil {
+		ret6, err = i.next(i.prev6, i.prefix6)
+		if err != nil {
+			if ret4 != nil && key.IPv4 == nil {
+				i.usedIPs.Remove(*ret4)
+			}
+
+			return nil, nil, fmt.Errorf("allocating IPv6 address: %w", err)
+		}
+
+		i.prev6 = *ret6
+	}
+
+	for _, addr := range fixed {
+		i.usedIPs.Add(addr)
+	}
+
+	i.unreserveLocked(key.ID)
+
+	return ret4, ret6, nil
+}
+
+// reservedLocked reports whether addr is held for a live pre-auth key other
+// than keyID.
+func (i *IPAllocator) reservedLocked(addr netip.Addr, keyID uint64) bool {
+	r, ok := i.reserved[addr]
+
+	return ok && r.keyID != keyID && r.live(time.Now())
+}
+
+// checkLocked validates addresses for [IPAllocator.Claim],
+// [IPAllocator.Reserve] and [IPAllocator.NextFor]. A reservation held by
+// keyID does not count as a conflict.
+func (i *IPAllocator) checkLocked(keyID uint64, addrs []netip.Addr) error {
 	set, err := i.usedIPs.IPSet()
 	if err != nil {
 		return err
@@ -446,10 +600,10 @@ func (i *IPAllocator) Claim(addrs ...netip.Addr) error {
 		if set.Contains(addr) || slices.Contains(addrs[:idx], addr) {
 			return fmt.Errorf("%w: %s", ErrIPInUse, addr)
 		}
-	}
 
-	for _, addr := range addrs {
-		i.usedIPs.Add(addr)
+		if i.reservedLocked(addr, keyID) {
+			return fmt.Errorf("%w: %s (key %d)", ErrIPReservedByKey, addr, i.reserved[addr].keyID)
+		}
 	}
 
 	return nil

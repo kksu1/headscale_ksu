@@ -1,6 +1,7 @@
 package types
 
 import (
+	"net/netip"
 	"time"
 
 	v1 "github.com/juanfont/headscale/gen/go/headscale/v1"
@@ -42,6 +43,34 @@ type PreAuthKey struct {
 
 	CreatedAt  *time.Time
 	Expiration *time.Time
+
+	// Fixed addresses for the node that registers with this key. They are
+	// reserved in the IP allocator until the key is used or expires.
+	IPv4 *netip.Addr `gorm:"column:ipv4;serializer:text"`
+	IPv6 *netip.Addr `gorm:"column:ipv6;serializer:text"`
+}
+
+// Addrs returns the key's fixed addresses.
+func (key *PreAuthKey) Addrs() []netip.Addr {
+	var ret []netip.Addr
+
+	if key.IPv4 != nil {
+		ret = append(ret, *key.IPv4)
+	}
+
+	if key.IPv6 != nil {
+		ret = append(ret, *key.IPv6)
+	}
+
+	return ret
+}
+
+func addrString(addr *netip.Addr) string {
+	if addr == nil {
+		return ""
+	}
+
+	return addr.String()
 }
 
 // PreAuthKeyNew is returned once when the key is created.
@@ -51,6 +80,8 @@ type PreAuthKeyNew struct {
 	Reusable   bool
 	Ephemeral  bool
 	Tags       []string
+	IPv4       *netip.Addr
+	IPv6       *netip.Addr
 	Expiration *time.Time
 	CreatedAt  *time.Time
 	User       *User // Can be nil for system-created tagged keys
@@ -64,6 +95,8 @@ func (key *PreAuthKeyNew) Proto() *v1.PreAuthKey {
 		Reusable:  key.Reusable,
 		Ephemeral: key.Ephemeral,
 		AclTags:   key.Tags,
+		Ipv4:      addrString(key.IPv4),
+		Ipv6:      addrString(key.IPv6),
 	}
 
 	if key.User != nil {
@@ -89,6 +122,8 @@ func (key *PreAuthKey) Proto() *v1.PreAuthKey {
 		Reusable:  key.Reusable,
 		Used:      key.Used,
 		AclTags:   key.Tags,
+		Ipv4:      addrString(key.IPv4),
+		Ipv6:      addrString(key.IPv6),
 	}
 
 	if key.User != nil {

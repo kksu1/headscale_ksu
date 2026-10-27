@@ -23,16 +23,19 @@ const (
 )
 
 type PreAuthKey struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	User          *User                  `protobuf:"bytes,1,opt,name=user,proto3" json:"user,omitempty"`
-	Id            uint64                 `protobuf:"varint,2,opt,name=id,proto3" json:"id,omitempty"`
-	Key           string                 `protobuf:"bytes,3,opt,name=key,proto3" json:"key,omitempty"`
-	Reusable      bool                   `protobuf:"varint,4,opt,name=reusable,proto3" json:"reusable,omitempty"`
-	Ephemeral     bool                   `protobuf:"varint,5,opt,name=ephemeral,proto3" json:"ephemeral,omitempty"`
-	Used          bool                   `protobuf:"varint,6,opt,name=used,proto3" json:"used,omitempty"`
-	Expiration    *timestamppb.Timestamp `protobuf:"bytes,7,opt,name=expiration,proto3" json:"expiration,omitempty"`
-	CreatedAt     *timestamppb.Timestamp `protobuf:"bytes,8,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
-	AclTags       []string               `protobuf:"bytes,9,rep,name=acl_tags,json=aclTags,proto3" json:"acl_tags,omitempty"`
+	state      protoimpl.MessageState `protogen:"open.v1"`
+	User       *User                  `protobuf:"bytes,1,opt,name=user,proto3" json:"user,omitempty"`
+	Id         uint64                 `protobuf:"varint,2,opt,name=id,proto3" json:"id,omitempty"`
+	Key        string                 `protobuf:"bytes,3,opt,name=key,proto3" json:"key,omitempty"`
+	Reusable   bool                   `protobuf:"varint,4,opt,name=reusable,proto3" json:"reusable,omitempty"`
+	Ephemeral  bool                   `protobuf:"varint,5,opt,name=ephemeral,proto3" json:"ephemeral,omitempty"`
+	Used       bool                   `protobuf:"varint,6,opt,name=used,proto3" json:"used,omitempty"`
+	Expiration *timestamppb.Timestamp `protobuf:"bytes,7,opt,name=expiration,proto3" json:"expiration,omitempty"`
+	CreatedAt  *timestamppb.Timestamp `protobuf:"bytes,8,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
+	AclTags    []string               `protobuf:"bytes,9,rep,name=acl_tags,json=aclTags,proto3" json:"acl_tags,omitempty"`
+	// Fixed addresses the node registering with this key gets.
+	Ipv4          string `protobuf:"bytes,10,opt,name=ipv4,proto3" json:"ipv4,omitempty"`
+	Ipv6          string `protobuf:"bytes,11,opt,name=ipv6,proto3" json:"ipv6,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -130,13 +133,31 @@ func (x *PreAuthKey) GetAclTags() []string {
 	return nil
 }
 
+func (x *PreAuthKey) GetIpv4() string {
+	if x != nil {
+		return x.Ipv4
+	}
+	return ""
+}
+
+func (x *PreAuthKey) GetIpv6() string {
+	if x != nil {
+		return x.Ipv6
+	}
+	return ""
+}
+
 type CreatePreAuthKeyRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	User          uint64                 `protobuf:"varint,1,opt,name=user,proto3" json:"user,omitempty"`
-	Reusable      bool                   `protobuf:"varint,2,opt,name=reusable,proto3" json:"reusable,omitempty"`
-	Ephemeral     bool                   `protobuf:"varint,3,opt,name=ephemeral,proto3" json:"ephemeral,omitempty"`
-	Expiration    *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=expiration,proto3" json:"expiration,omitempty"`
-	AclTags       []string               `protobuf:"bytes,5,rep,name=acl_tags,json=aclTags,proto3" json:"acl_tags,omitempty"`
+	state      protoimpl.MessageState `protogen:"open.v1"`
+	User       uint64                 `protobuf:"varint,1,opt,name=user,proto3" json:"user,omitempty"`
+	Reusable   bool                   `protobuf:"varint,2,opt,name=reusable,proto3" json:"reusable,omitempty"`
+	Ephemeral  bool                   `protobuf:"varint,3,opt,name=ephemeral,proto3" json:"ephemeral,omitempty"`
+	Expiration *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=expiration,proto3" json:"expiration,omitempty"`
+	AclTags    []string               `protobuf:"bytes,5,rep,name=acl_tags,json=aclTags,proto3" json:"acl_tags,omitempty"`
+	// Fixed addresses for the node that registers with this key. Empty means
+	// allocate as usual. Not allowed on reusable keys.
+	Ipv4          string `protobuf:"bytes,6,opt,name=ipv4,proto3" json:"ipv4,omitempty"`
+	Ipv6          string `protobuf:"bytes,7,opt,name=ipv6,proto3" json:"ipv6,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -204,6 +225,20 @@ func (x *CreatePreAuthKeyRequest) GetAclTags() []string {
 		return x.AclTags
 	}
 	return nil
+}
+
+func (x *CreatePreAuthKeyRequest) GetIpv4() string {
+	if x != nil {
+		return x.Ipv4
+	}
+	return ""
+}
+
+func (x *CreatePreAuthKeyRequest) GetIpv6() string {
+	if x != nil {
+		return x.Ipv6
+	}
+	return ""
 }
 
 type CreatePreAuthKeyResponse struct {
@@ -494,7 +529,7 @@ var File_headscale_v1_preauthkey_proto protoreflect.FileDescriptor
 
 const file_headscale_v1_preauthkey_proto_rawDesc = "" +
 	"\n" +
-	"\x1dheadscale/v1/preauthkey.proto\x12\fheadscale.v1\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x17headscale/v1/user.proto\"\xb6\x02\n" +
+	"\x1dheadscale/v1/preauthkey.proto\x12\fheadscale.v1\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x17headscale/v1/user.proto\"\xde\x02\n" +
 	"\n" +
 	"PreAuthKey\x12&\n" +
 	"\x04user\x18\x01 \x01(\v2\x12.headscale.v1.UserR\x04user\x12\x0e\n" +
@@ -508,7 +543,10 @@ const file_headscale_v1_preauthkey_proto_rawDesc = "" +
 	"expiration\x129\n" +
 	"\n" +
 	"created_at\x18\b \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x12\x19\n" +
-	"\bacl_tags\x18\t \x03(\tR\aaclTags\"\xbe\x01\n" +
+	"\bacl_tags\x18\t \x03(\tR\aaclTags\x12\x12\n" +
+	"\x04ipv4\x18\n" +
+	" \x01(\tR\x04ipv4\x12\x12\n" +
+	"\x04ipv6\x18\v \x01(\tR\x04ipv6\"\xe6\x01\n" +
 	"\x17CreatePreAuthKeyRequest\x12\x12\n" +
 	"\x04user\x18\x01 \x01(\x04R\x04user\x12\x1a\n" +
 	"\breusable\x18\x02 \x01(\bR\breusable\x12\x1c\n" +
@@ -516,7 +554,9 @@ const file_headscale_v1_preauthkey_proto_rawDesc = "" +
 	"\n" +
 	"expiration\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
 	"expiration\x12\x19\n" +
-	"\bacl_tags\x18\x05 \x03(\tR\aaclTags\"V\n" +
+	"\bacl_tags\x18\x05 \x03(\tR\aaclTags\x12\x12\n" +
+	"\x04ipv4\x18\x06 \x01(\tR\x04ipv4\x12\x12\n" +
+	"\x04ipv6\x18\a \x01(\tR\x04ipv6\"V\n" +
 	"\x18CreatePreAuthKeyResponse\x12:\n" +
 	"\fpre_auth_key\x18\x01 \x01(\v2\x18.headscale.v1.PreAuthKeyR\n" +
 	"preAuthKey\")\n" +

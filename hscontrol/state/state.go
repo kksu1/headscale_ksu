@@ -1089,6 +1089,24 @@ func (s *State) RenameNode(nodeID types.NodeID, newName string) (types.NodeView,
 // address that is malformed or of the wrong family.
 var ErrSetNodeIPsInvalid = errors.New("invalid node address")
 
+// ErrFixedIPReusableKey is returned when fixed addresses are requested for a
+// reusable pre-auth key: one address cannot go to several nodes.
+var ErrFixedIPReusableKey = errors.New("fixed addresses cannot be set on a reusable pre-auth key")
+
+// validateFixedAddrs checks that ipv4 and ipv6, where set, are plain
+// addresses of their family.
+func validateFixedAddrs(ipv4, ipv6 netip.Addr) error {
+	if ipv4.IsValid() && (!ipv4.Is4() || ipv4.Zone() != "") {
+		return fmt.Errorf("%w: %s is not an IPv4 address", ErrSetNodeIPsInvalid, ipv4)
+	}
+
+	if ipv6.IsValid() && (!ipv6.Is6() || ipv6.Is4In6() || ipv6.Zone() != "") {
+		return fmt.Errorf("%w: %s is not an IPv6 address", ErrSetNodeIPsInvalid, ipv6)
+	}
+
+	return nil
+}
+
 // SetNodeIPs assigns fixed addresses to a node. An invalid (zero) address
 // keeps the node's current address for that family. New addresses are
 // claimed in the [hsdb.IPAllocator] before anything else changes, which both
@@ -1102,12 +1120,9 @@ func (s *State) SetNodeIPs(nodeID types.NodeID, ipv4, ipv6 netip.Addr) (types.No
 		return types.NodeView{}, change.Change{}, fmt.Errorf("%w: no address given", ErrSetNodeIPsInvalid)
 	}
 
-	if ipv4.IsValid() && (!ipv4.Is4() || ipv4.Zone() != "") {
-		return types.NodeView{}, change.Change{}, fmt.Errorf("%w: %s is not an IPv4 address", ErrSetNodeIPsInvalid, ipv4)
-	}
-
-	if ipv6.IsValid() && (!ipv6.Is6() || ipv6.Is4In6() || ipv6.Zone() != "") {
-		return types.NodeView{}, change.Change{}, fmt.Errorf("%w: %s is not an IPv6 address", ErrSetNodeIPsInvalid, ipv6)
+	err := validateFixedAddrs(ipv4, ipv6)
+	if err != nil {
+		return types.NodeView{}, change.Change{}, err
 	}
 
 	existing, ok := s.nodeStore.GetNode(nodeID)
@@ -1137,7 +1152,7 @@ func (s *State) SetNodeIPs(nodeID types.NodeID, ipv4, ipv6 netip.Addr) (types.No
 		return existing, change.Change{}, nil
 	}
 
-	err := s.ipAlloc.Claim(claim...)
+	err = s.ipAlloc.Claim(claim...)
 	if err != nil {
 		return types.NodeView{}, change.Change{}, fmt.Errorf("setting node IPs: %w", err)
 	}
@@ -1628,7 +1643,82 @@ func (s *State) DestroyAPIKey(key types.APIKey) error {
 // CreatePreAuthKey generates a new pre-authentication key for a user.
 // The userID parameter is now optional (can be nil) for system-created tagged keys.
 func (s *State) CreatePreAuthKey(userID *types.UserID, reusable bool, ephemeral bool, expiration *time.Time, aclTags []string) (*types.PreAuthKeyNew, error) {
-	return s.db.CreatePreAuthKey(userID, reusable, ephemeral, expiration, aclTags)
+	return s.CreatePreAuthKeyWithIPs(userID, reusable, ephemeral, expiration, aclTags, netip.Addr{}, netip.Addr{})
+}
+
+// CreatePreAuthKeyWithIPs is [State.CreatePreAuthKey] with fixed addresses
+// for the node that registers with the key. An invalid (zero) address means
+// that family is allocated as usual. The addresses are validated like
+// [State.SetNodeIPs] and reserved until the key is used or expires, so no
+// other node can get them meanwhile.
+func (s *State) CreatePreAuthKeyWithIPs(
+	userID *types.UserID,
+	reusable bool,
+	ephemeral bool,
+	expiration *time.Time,
+	aclTags []string,
+	ipv4, ipv6 netip.Addr,
+) (*types.PreAuthKeyNew, error) {
+	if !ipv4.IsValid() && !ipv6.IsValid() {
+		return s.db.CreatePreAuthKey(userID, reusable, ephemeral, expiration, aclTags)
+	}
+
+	err := validateFixedAddrs(ipv4, ipv6)
+	if err != nil {
+		return nil, err
+	}
+
+	if reusable {
+		return nil, ErrFixedIPReusableKey
+	}
+
+	fixed := types.PreAuthKey{}
+	if ipv4.IsValid() {
+		fixed.IPv4 = &ipv4
+	}
+
+	if ipv6.IsValid() {
+		fixed.IPv6 = &ipv6
+	}
+
+	var reservedID uint64
+
+	key, err := hsdb.Write(s.db.DB, func(tx *gorm.DB) (*types.PreAuthKeyNew, error) {
+		key, err := hsdb.CreatePreAuthKey(tx, userID, reusable, ephemeral, expiration, aclTags)
+		if err != nil {
+			return nil, err
+		}
+
+		err = tx.Model(&types.PreAuthKey{ID: key.ID}).Select("ipv4", "ipv6").Updates(&fixed).Error
+		if err != nil {
+			return nil, fmt.Errorf("saving pre-auth key addresses: %w", err)
+		}
+
+		// Reserve inside the transaction so a conflict rolls the key back.
+		err = s.ipAlloc.Reserve(key.ID, expiration, fixed.Addrs()...)
+		if err != nil {
+			return nil, fmt.Errorf("reserving pre-auth key addresses: %w", err)
+		}
+
+		reservedID = key.ID
+		key.IPv4, key.IPv6 = fixed.IPv4, fixed.IPv6
+
+		return key, nil
+	})
+	if err != nil {
+		if reservedID != 0 {
+			s.ipAlloc.Unreserve(reservedID)
+		}
+
+		return nil, err
+	}
+
+	log.Info().
+		Uint64(zf.AuthKeyID, key.ID).
+		Str("fixed_ips", fmt.Sprint(fixed.Addrs())).
+		Msg("pre-auth key created with fixed IPs")
+
+	return key, nil
 }
 
 // Test helpers for the state layer
@@ -1706,12 +1796,26 @@ func (s *State) ListPreAuthKeys() ([]types.PreAuthKey, error) {
 
 // ExpirePreAuthKey marks a pre-authentication key as expired.
 func (s *State) ExpirePreAuthKey(id uint64) error {
-	return s.db.ExpirePreAuthKey(id)
+	err := s.db.ExpirePreAuthKey(id)
+	if err != nil {
+		return err
+	}
+
+	s.ipAlloc.Unreserve(id)
+
+	return nil
 }
 
 // DeletePreAuthKey permanently deletes a pre-authentication key.
 func (s *State) DeletePreAuthKey(id uint64) error {
-	return s.db.DeletePreAuthKey(id)
+	err := s.db.DeletePreAuthKey(id)
+	if err != nil {
+		return err
+	}
+
+	s.ipAlloc.Unreserve(id)
+
+	return nil
 }
 
 // GetAuthCacheEntry retrieves a pending auth request from the cache.
@@ -2133,8 +2237,8 @@ func (s *State) createAndSaveNewNode(params newNodeParams) (types.NodeView, erro
 		return types.NodeView{}, err
 	}
 
-	// Allocate new IPs
-	ipv4, ipv6, err := s.ipAlloc.Next()
+	// Allocate new IPs; a pre-auth key's fixed addresses are used as is.
+	ipv4, ipv6, err := s.ipAlloc.NextFor(params.PreAuthKey)
 	if err != nil {
 		return types.NodeView{}, fmt.Errorf("allocating IPs: %w", err)
 	}
@@ -2614,6 +2718,11 @@ func (s *State) HandleNodeFromPreAuthKey(
 		return types.NodeView{}, change.Change{}, err
 	}
 
+	// Registering marks a single-use key used; remember whether this is the
+	// key's first use so its fixed addresses are applied only once.
+	pakFirstUse := !pak.Used
+	movedToFixedIPs := false
+
 	// For existing nodes, skip validation if:
 	// 1. MachineKey matches (cryptographic proof of machine identity)
 	// 2. User/tag ownership matches (from the PAK being used)
@@ -2875,6 +2984,32 @@ func (s *State) HandleNodeFromPreAuthKey(
 
 		finalNode = updatedNodeView
 		keysOnly = onlyKeysChanged(before, updatedNodeView, time.Now())
+
+		// A fresh key with fixed addresses moves the existing node to them.
+		if pakFirstUse && len(pak.Addrs()) > 0 {
+			var fixed4, fixed6 netip.Addr
+			if pak.IPv4 != nil {
+				fixed4 = *pak.IPv4
+			}
+
+			if pak.IPv6 != nil {
+				fixed6 = *pak.IPv6
+			}
+
+			s.ipAlloc.Unreserve(pak.ID)
+
+			moved, _, err := s.SetNodeIPs(finalNode.ID(), fixed4, fixed6)
+			if err != nil {
+				log.Error().
+					Err(err).
+					EmbedObject(finalNode).
+					Uint64(zf.AuthKeyID, pak.ID).
+					Msg("could not apply pre-auth key fixed IPs to re-registering node")
+			} else {
+				finalNode = moved
+				movedToFixedIPs = true
+			}
+		}
 	} else {
 		// Node does not exist for this user with this machine key.
 		// For a user-owned key, check whether the machine key is already held
@@ -2967,6 +3102,11 @@ func (s *State) HandleNodeFromPreAuthKey(
 	}
 
 	policyChanged := !usersChange.IsEmpty() || !nodesChange.IsEmpty()
+
+	// Peers and the node itself must learn the node's new addresses.
+	if movedToFixedIPs {
+		return finalNode, change.FullUpdate(), nil
+	}
 
 	return finalNode, reauthChange(finalNode, keysOnly, policyChanged), nil
 }

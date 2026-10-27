@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/juanfont/headscale/hscontrol/servertest"
+	"github.com/juanfont/headscale/hscontrol/types"
 	"github.com/stretchr/testify/require"
 	"tailscale.com/types/netmap"
 )
@@ -78,4 +79,38 @@ func TestSetNodeIPsPropagates(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestPreAuthKeyFixedIPsRegistration proves a node registering with a fixed
+// IP pre-auth key starts out with the key's addresses, and its peers see them.
+func TestPreAuthKeyFixedIPsRegistration(t *testing.T) {
+	t.Parallel()
+
+	srv := servertest.NewServer(t)
+	user := srv.CreateUser(t, "fixed-user")
+
+	c1 := servertest.NewClient(t, srv, "fixed-peer", servertest.WithUser(user))
+	c1.WaitForPeers(t, 0, 10*time.Second)
+
+	fixed4 := netip.MustParseAddr("100.64.0.56")
+
+	pak, err := srv.State().CreatePreAuthKeyWithIPs(new(types.UserID(user.ID)), false, false, nil, nil, fixed4, netip.Addr{})
+	require.NoError(t, err)
+
+	c2 := servertest.NewClient(t, srv, "fixed-node", servertest.WithUser(user), servertest.WithAuthKey(pak.Key))
+	c2.WaitForPeers(t, 1, 10*time.Second)
+
+	self := c2.Netmap().SelfNode.Addresses().AsSlice()
+	require.Contains(t, self, netip.PrefixFrom(fixed4, 32))
+
+	c1.WaitForCondition(t, "peer has fixed address", 10*time.Second,
+		func(nm *netmap.NetworkMap) bool {
+			for _, p := range nm.Peers {
+				if p.Hostinfo().Hostname() == "fixed-node" {
+					return slices.Contains(p.Addresses().AsSlice(), netip.PrefixFrom(fixed4, 32))
+				}
+			}
+
+			return false
+		})
 }

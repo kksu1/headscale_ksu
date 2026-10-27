@@ -67,6 +67,7 @@ type clientConfig struct {
 	tags         []string
 	user         *types.User
 	deltaUpdates bool
+	authKey      string
 }
 
 // WithDeltaUpdates makes the client accept incremental map updates the way
@@ -90,6 +91,12 @@ func WithHostname(name string) ClientOption {
 // WithTags sets ACL tags on the pre-auth key.
 func WithTags(tags ...string) ClientOption {
 	return func(c *clientConfig) { c.tags = tags }
+}
+
+// WithAuthKey registers the client with the given pre-auth key instead of
+// creating one.
+func WithAuthKey(authKey string) ClientOption {
+	return func(c *clientConfig) { c.authKey = authKey }
 }
 
 // WithUser sets the user for the client. If not set, the harness
@@ -123,6 +130,8 @@ func NewClient(tb testing.TB, server *TestServer, name string, opts ...ClientOpt
 	var authKey string
 
 	switch {
+	case cc.authKey != "":
+		authKey = cc.authKey
 	case cc.ephemeral:
 		authKey = server.CreateEphemeralPreAuthKey(tb, uid)
 	case len(cc.tags) > 0:

@@ -16,6 +16,9 @@ message PreAuthKey {
   google.protobuf.Timestamp expiration = 7;
   google.protobuf.Timestamp created_at = 8;
   repeated string acl_tags = 9;
+  // Fixed addresses the node registering with this key gets.
+  string ipv4 = 10;
+  string ipv6 = 11;
 }
 
 message CreatePreAuthKeyRequest {
@@ -24,6 +27,10 @@ message CreatePreAuthKeyRequest {
   bool ephemeral = 3;
   google.protobuf.Timestamp expiration = 4;
   repeated string acl_tags = 5;
+  // Fixed addresses for the node that registers with this key. Empty means
+  // allocate as usual. Not allowed on reusable keys.
+  string ipv4 = 6;
+  string ipv6 = 7;
 }
 
 message CreatePreAuthKeyResponse {

@@ -411,6 +411,11 @@ func (v PreAuthKeyView) Expiration() views.ValuePointer[time.Time] {
 	return views.ValuePointerOf(v.ж.Expiration)
 }
 
+// Fixed addresses for the node that registers with this key. They are
+// reserved in the IP allocator until the key is used or expires.
+func (v PreAuthKeyView) IPv4() views.ValuePointer[netip.Addr] { return views.ValuePointerOf(v.ж.IPv4) }
+func (v PreAuthKeyView) IPv6() views.ValuePointer[netip.Addr] { return views.ValuePointerOf(v.ж.IPv6) }
+
 // A compilation failure here means this code must be regenerated, with the command at the top of this file.
 var _PreAuthKeyViewNeedsRegeneration = PreAuthKey(struct {
 	ID         uint64
@@ -425,4 +430,6 @@ var _PreAuthKeyViewNeedsRegeneration = PreAuthKey(struct {
 	Tags       []string
 	CreatedAt  *time.Time
 	Expiration *time.Time
+	IPv4       *netip.Addr
+	IPv6       *netip.Addr
 }{})

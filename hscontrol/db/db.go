@@ -808,6 +808,24 @@ WHERE tags IS NOT NULL AND tags != '[]' AND tags != '' AND tags != 'null'
 				},
 				Rollback: func(db *gorm.DB) error { return nil },
 			},
+			{
+				// setip fork: a pre-auth key can carry fixed addresses
+				// for the node that registers with it.
+				ID: "202610271200-pre-auth-key-fixed-ips",
+				Migrate: func(tx *gorm.DB) error {
+					return tx.Transaction(func(tx *gorm.DB) error {
+						for _, column := range []string{"ipv4", "ipv6"} {
+							err := tx.Exec(`ALTER TABLE pre_auth_keys ADD COLUMN ` + column + ` text`).Error
+							if err != nil {
+								return fmt.Errorf("adding pre_auth_keys.%s: %w", column, err)
+							}
+						}
+
+						return nil
+					})
+				},
+				Rollback: func(db *gorm.DB) error { return nil },
+			},
 		},
 	)
 
